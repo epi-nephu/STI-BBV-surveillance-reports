@@ -1,0 +1,521 @@
+---
+title: "NEPHU - Hepatitis B weekly report"
+author: ""
+date: "Report date: `r format(Sys.Date(), '%d %b %Y')`"
+output: html_document
+params:
+  epiweek_enddate: "19 Oct 2024"
+knit: (function(input, ...) {
+  rmarkdown::render(input, output_file = paste0("HepB Report", "-", format(Sys.Date(), "%d %b %Y")), output_dir = "../Output") })
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.width=9, fig.height=6)
+
+library(tidyverse)
+library(lubridate)
+library(flextable)
+library(officer)
+library(janitor)
+library(here)
+
+i_am("Code/HepB-Weekly-Report.Rmd")
+```
+
+```{r define files}
+nephu_linelist_file <- "NEPHUCaseLinelist.xlsx"
+viclinelist_file <- "VictoriaLinelist2.xlsx"
+population_file <- "Data/LGAPopulationData.xlsx"
+
+wd <- getwd()
+main_dir <- str_extract(wd, "^C:.+/Epidemiology")
+phess_dir_component <- "/Epi reports/PHESS Reporting/PHESS Reports for Power BI"
+phess_data_dir <- paste0(main_dir, phess_dir_component)
+
+```
+
+```{r load phess data}
+viclinelist.raw <- readxl::read_xlsx(file.path(phess_data_dir, viclinelist_file), sheet="VictoriaLinelist2", guess_max=min(50000, Inf)) %>% clean_names()
+
+epirisk.raw <- readxl::read_xlsx(file.path(phess_data_dir, nephu_linelist_file), sheet=1, guess_max=min(100000, Inf)) %>% clean_names() 
+
+```
+
+```{r set dates}
+epiweek_start <- dmy(params$epiweek_enddate) - 6
+epiweek_startdate <- paste(day(epiweek_start), month(epiweek_start, label=TRUE), year(epiweek_start))
+```
+
+```{r data clean}
+hepB_conds <- c("Hepatitis B - Newly acquired", "Hepatitis B - Unspecified")
+  
+viclinelist.clean <- viclinelist.raw %>% 
+  filter(condition %in% hepB_conds) %>% 
+  rename(defn = most_recent_event_classfication, 
+         organism = organism_cause, 
+         lga = local_government_area, 
+         lphu = local_public_health_unit) %>% 
+  select(phess_id, condition, organism, event_date, event_type, defn, lga, lphu)
+
+
+epirisk.clean <- epirisk.raw %>% 
+  filter(condition %in% hepB_conds) %>% 
+  select(-c(reporting_group, occupation, work_study_care_status, where, follow_up_indicated_by_epi, follow_up_completed, follow_up_required_by, reason_for_follow_up, date_changed, other_organisation_source_reference)) %>% 
+  rename(defn = most_recent_event_classfication, 
+         organism = organism_cause, 
+         serogrp = sero_group_subtype, 
+         clin_pres = case_found_by, 
+         dob = birth_date, 
+         age = age_in_years_from_event_date, 
+         atsi = indigenous_status, 
+         suburb = suburb_town, 
+         postcode = postcode_20, 
+         lga = local_government_area, 
+         lphu = local_public_health_unit, 
+         cty_birth = country_of_birth, 
+         death_status = death_due_to_the_notifiable_condition_answer_disease, 
+         sympt_onset = date_of_first_symptom_onset, 
+         live_hiv = is_the_case_a_person_living_with_hiv, 
+         risk_factor_contact_7daysprior = in_the_seven_days_prior_to_the_onset_of_symptoms_did_the_case_have_contact_with_any_of_the_following_risk_factors, 
+         illness_contact_7daysprior = did_the_case_have_contact_with_a_person_know_or_suspected_to_have_a_similar_illness_in_the_7_days_prior_to_symptom_onset, 
+         traveller_contact_7daysprior = did_the_case_have_contact_with_a_person_who_had_recently_travelled_in_the_7_days_prior_to_symptom_onset, 
+         sopv_7daysprior = in_the_7_days_prior_to_symptom_onset_did_the_case_attend_any_sex_on_premises_venues_or_engage_in_group_sex_activities, 
+         sexual_7daysprior = did_the_case_have_sexual_contact_with_anyone_in_the_7_days_prior_to_symptom_onset, 
+         food_drink_7daysprior = in_the_7_days_prior_to_symptom_onset_did_the_case_consume_food_or_drink_from_any_of_the_following, 
+         shig_sexual_contact = did_any_sexual_partner_report_any_symptoms_of_shigella, 
+         shig_travel_contact = did_the_traveller_report_any_symptoms_of_shigella,
+         ds_contacts_ident = number_of_downstream_contacts_identified, 
+         ds_contacts_nocontact = number_of_downstream_contacts_unable_to_be_contacted, 
+         us_contacts_ident = number_of_acquisition_upstream_contacts_identified, 
+         us_contacts_nocontact = number_of_acquisition_upstream_contacts_unable_to_be_contacted, 
+         car_alert = does_this_organism_have_critical_antimicrobial_resistance_car_alert, 
+         infect_from = who_was_the_infection_likely_acquired_from, 
+         pregnant = was_the_case_pregnant_at_time_of_initial_notification, 
+         cty_travel = country_44, 
+         linked_case_cat = category
+         )
+
+pop_data <- readxl::read_xlsx(here(population_file))
+
+```
+
+```{r data config}
+agecat5_levels <- c("0-4", "5-9", "10-14", "15-19", "20-24", "25-29", "30-34", "35-39", "40-44", "45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79", "80-84", "85+")
+
+nephu_lgas <- c("Banyule (C)", "Boroondara (C)", "Darebin (C)", "Hume (C)", "Knox (C)", "Manningham (C)", "Maroondah (C)", "Nillumbik (S)", 
+                    "Whitehorse (C)", "Whittlesea (C)", "Yarra (C)", "Yarra Ranges (S)")
+
+
+# configure data to NEPHU and include only confirmed and probable cases
+hepB_data <- epirisk.clean %>% 
+  filter(defn=="Confirmed" | defn=="Probable") %>% 
+  filter(event_type=="Case") %>% 
+  filter(lga %in% nephu_lgas) %>% 
+  remove_empty(which="cols") %>% 
+  mutate(agecat5 = case_when(between(age, 0, 4) ~ "0-4", 
+                             between(age, 5, 9) ~ "5-9",
+                             between(age, 10, 14) ~ "10-14",
+                             between(age, 15, 19) ~ "15-19",
+                             between(age, 20, 24) ~ "20-24",
+                             between(age, 25, 29) ~ "25-29",
+                             between(age, 30, 34) ~ "30-34",
+                             between(age, 35, 39) ~ "35-39",
+                             between(age, 40, 44) ~ "40-44",
+                             between(age, 45, 49) ~ "45-49",
+                             between(age, 50, 54) ~ "50-54",
+                             between(age, 55, 59) ~ "55-59",
+                             between(age, 60, 64) ~ "60-64",
+                             between(age, 65, 69) ~ "65-69",
+                             between(age, 70, 74) ~ "70-74",
+                             between(age, 75, 79) ~ "75-79",
+                             between(age, 80, 84) ~ "80-84",
+                             between(age, 85, 99) ~ "85+", 
+                             TRUE ~ NA_character_), 
+         agecat5 = factor(agecat5, levels=agecat5_levels), 
+         aus_born = case_when(cty_birth=="Australia" ~ "Australia", 
+                              cty_birth=="Not Stated" ~ "Not Stated", 
+                              cty_birth=="Unknown" ~ "Not Stated", 
+                              TRUE ~ "Overseas"), 
+         aus_born = factor(aus_born, levels=c("Australia", "Overseas", "Not stated")), 
+         defn = factor(defn, levels=c("Confirmed", "Probable")), 
+         sex = factor(sex, levels=c("Female", "Male", "Not stated", "Other")), 
+         atsi = fct_collapse(factor(atsi, levels=c("Aboriginal and Torres Strait Islander origin", "Aboriginal but not Torres Strait Islander origin", "Not Aboriginal or Torres Strait Islander", "Missing/Not Stated")), `Aboriginal and/or Torres Strait Islander` = c("Aboriginal and Torres Strait Islander origin", "Aboriginal but not Torres Strait Islander origin")), 
+         age = if_else(age==999, NA_integer_, age), 
+         event_date = ymd(event_date), 
+         #defn_date = dmy(str_extract(date_changed, "[:graph:]{10}$")), 
+         epi_MY = my(paste(month(event_date), year(event_date), sep="-")), 
+         epiyear = epiyear(event_date), 
+         epi_Y = ymd(paste0(epiyear, "-01-01")), 
+         epiweek = epiweek(event_date), 
+         epimonth = month(event_date, label=TRUE), 
+         epi_WY = ceiling_date(event_date, "week") -1, 
+         mth_yr = paste(epimonth, epiyear))
+
+# revalue the condition variable
+hepB_data$condition <- plyr::revalue(hepB_data$condition, c("Hepatitis B - Newly acquired"="HepB-Newly acquired", "Hepatitis B - Unspecified"="HepB-Unspecified"))
+
+metro_vic <- c("North Eastern", "South Eastern", "Western")
+
+vic_data <- viclinelist.clean %>% 
+  filter(defn=="Confirmed" | defn=="Probable") %>% 
+  filter(event_type=="Case") %>% 
+  mutate(metro = if_else(lphu %in% metro_vic, "Yes", "No"), 
+         nephu_vic = case_when(lga %in% nephu_lgas ~ lga, 
+                               TRUE ~ "Vic"), 
+         event_date = ymd(event_date), 
+         epiweek = epiweek(event_date), 
+         epimonth = month(event_date, label=TRUE), 
+         epiyear = epiyear(event_date), 
+         epi_MY = my(paste(epimonth, epiyear, sep="-")), 
+         epi_Y = ymd(paste0(epiyear, "-01-01")), 
+         epi_WY = ceiling_date(event_date, "week") -1, 
+         mth_yr = paste(epimonth, epiyear)) %>% 
+  arrange(event_date)
+
+# revalue the condition variable in vic-data
+vic_data$condition <- plyr::revalue(vic_data$condition, c("Hepatitis B - Newly acquired"="HepB-Newly acquired", "Hepatitis B - Unspecified"="HepB-Unspecified"))
+
+```
+
+```{r data 4wk}
+current_epiwk <- epiweek(dmy(params$epiweek_enddate))
+
+epiwk0_end <- dmy(params$epiweek_enddate)
+epiwk0.dat <- filter(hepB_data, epi_WY==epiwk0_end)
+
+epiwkMinus1_end <- dmy(params$epiweek_enddate) - days(7)
+epiwkMinus2_end <- dmy(params$epiweek_enddate) - days(14)
+epiwkMinus3_end <- dmy(params$epiweek_enddate) - days(21)
+table_epiweek_end_header <- c(epiwkMinus3_end, epiwkMinus2_end, epiwkMinus1_end, epiwk0_end)
+table_epiweek_header <- as.character(c(current_epiwk-3, current_epiwk-2, current_epiwk-1, current_epiwk))
+
+epiweek_dates.tab <- data.frame(
+  epiweek = as.numeric(table_epiweek_header), 
+  epiweek_enddate = table_epiweek_end_header)
+
+hepB_data4wk <- filter(hepB_data, between(epi_WY, epiwkMinus3_end, epiwk0_end))
+
+vic_epiwk0.dat <- filter(vic_data, epi_WY==epiwk0_end)
+vic_data4wk <- filter(vic_data, between(epi_WY, epiwkMinus3_end, epiwk0_end))
+
+```
+
+```{r overview analysis}
+percent <- function (x) {round(x*100, digits=0)}
+
+overview_col1_rownames <- c("Epiweek", "Total cases notified - VIC", "Total cases notified - NEPHU", "NEPHU % of VIC total cases", "Nephu", "Confirmed cases", "Male cases (%)", "Median age (years)")
+
+# HepB-Unspecified
+unsp_hepB_summary1 <- hepB_data4wk %>% 
+  filter(condition=="HepB-Unspecified") %>% 
+  group_by(epiweek) %>% 
+  summarise(total_cases = n(), 
+            confirmed = sum(defn=="Confirmed"), 
+            male = sum(sex=="Male"), 
+            median_age = median(age, na.rm=TRUE)) %>% 
+  mutate(male_pct = percent(male/total_cases), 
+         median_age = round(median_age), 
+         male_w_pct = paste0(male, " (", male_pct, "%)")) 
+# cases do not arise every week
+unsp_hepB_summary2 <- left_join(epiweek_dates.tab, unsp_hepB_summary1, by="epiweek") %>% 
+  select(epiweek_enddate, epiweek, total_cases, confirmed, male_w_pct, median_age) %>% 
+  replace_na(replace=list(total_cases = 0, confirmed = 0, male_w_pct = "0 (0%)", median_age = 0))
+
+nephu_unsp_total_cases <- unsp_hepB_summary2[c("epiweek", "total_cases")] %>% rename(nephu_cases = total_cases)
+
+vic_unsp_summary <- vic_data4wk %>% 
+  filter(condition=="HepB-Unspecified") %>% 
+  group_by(epiweek) %>%
+  summarise(total_cases = n()) %>% 
+  left_join(., nephu_unsp_total_cases, by="epiweek") %>% 
+  mutate(nephu_pct = paste0(percent(nephu_cases/total_cases), "%"))
+  
+vic_unsp_summary.row <- as_tibble(t(vic_unsp_summary[, -1])) %>% mutate(across(1:4, ~as.character(.)))
+
+overview_unsp_hepB.tab <- as_tibble(t(unsp_hepB_summary2[, -1])) %>% 
+  add_row(vic_unsp_summary.row, .after=1) %>% 
+  bind_cols(., overview_col1_rownames) %>% 
+  relocate(...5) %>% 
+  filter(...5!="Nephu")
+names(overview_unsp_hepB.tab) <- c(" ", paste0("Week ending.", table_epiweek_end_header))
+
+
+# total cases (week 0)
+n_epiwk0 <- nrow(epiwk0.dat)
+
+# case defn numbers
+new_cases_wk0 <- filter(epiwk0.dat, condition=="HepB-Newly acquired")
+unsp_cases_wk0 <- filter(epiwk0.dat, condition=="HepB-Unspecified")
+
+unsp_hepB_conf_wk0 <- nrow(filter(unsp_cases_wk0, defn=="Confirmed"))
+unsp_hepB_prob_wk0 <- nrow(filter(unsp_cases_wk0, defn=="Probable"))
+
+# comparison with past 3 epiweeks
+prev_unsp_hepB_ave <- round(nrow(filter(hepB_data4wk, condition=="HepB-Unspecified" & epiweek!=current_epiwk))/3) 
+
+pct_compare_unsp_hepB <- percent((prev_unsp_hepB_ave - nrow(unsp_cases_wk0)) / prev_unsp_hepB_ave)
+pct_value_unsp_hepB <- abs(pct_compare_unsp_hepB)
+pct_change_unsp_hepB <- if_else(pct_compare_unsp_hepB>0, "decrease", "increase")
+
+# number HepB - newly acquired in past 4 weeks
+new_cases_4wk <- nrow(filter(hepB_data4wk, condition=="HepB-Newly acquired"))
+
+```
+
+### Overview of most recent 4 epiweeks
+
+From `r epiweek_startdate` to `r params$epiweek_enddate` (epiweek `r current_epiwk`), a total of `r n_epiwk0` cases for Hepatitis B infection were notified in the NEPHU catchment area.
+
+<br><br>
+
+#### Hepatitis B - Unspecified
+
+There were `r unsp_hepB_conf_wk0` confirmed cases for Hepatitis B - Unspecified, a `r pct_value_unsp_hepB`% `r pct_change_unsp_hepB` compared to an average of `r prev_unsp_hepB_ave` cases over the three previous weeks.
+
+<br><br>
+
+#### Hepatitis B - Newly acquired
+
+There were `r new_cases_4wk` cases of Hepatitis B - Newly acquired that were notified in the NEPHU catchment area. <br><br>
+
+**Table of Hepatitis B - Unspecified cases notified in NEPHU in the most recent 4 epiweeks** <br>
+
+```{r overview tab unsp, ft.align="left"}
+flextable(overview_unsp_hepB.tab) %>% separate_header(opts=c("span-top", "bottom-vspan"), split = "[_\\.]") %>% align(i=1, align="center", part="header") %>% autofit()
+
+```
+
+<br><br><br>
+
+### Epicurve - last 12 months
+
+Hepatitis B epi curve last 12 months - weekly cases by event date
+
+```{r epi curve}
+# A function factory for getting integer y-axis values (https://gist.github.com/jhrcook/eb7b63cc57c683a6eb4986c4107a88ec)
+integer_breaks <- function(n = 5, ...) {
+    fxn <- function(x) {
+        breaks <- floor(pretty(x, n, ...))
+        names(breaks) <- attr(breaks, "labels")
+        breaks
+    }
+    return(fxn)
+}
+
+
+epiweek_startdate_12m <- ceiling_date(min(ymd(hepB_data$event_date)), unit="week", week_start=7) - if_else(wday(min(ymd(hepB_data$event_date)))==1, 7, 0)
+epiweek_breaks <- c(seq.Date(from=as.Date(epiweek_startdate_12m), to=as.Date(dmy(params$epiweek_enddate)), by="week"), as.Date(dmy(params$epiweek_enddate)))
+
+#epiweek_start_breaks <- unique(hepB_data$epi_WY)
+
+ggplot(data = hepB_data) +
+  geom_histogram(aes(x = event_date, group = fct_rev(condition), fill = condition), breaks=epiweek_breaks, closed="left", , col="gray") +
+  #scale_fill_manual(values=c("#F8766D", "#00BFC4", "#619CFF"), name="Condition") +
+  scale_x_date(expand=c(0,0), date_breaks="1 month", date_minor_breaks="month", date_labels="%b %Y", name="") +
+  scale_y_continuous(expand=c(0,0), breaks=integer_breaks(), name="Weekly notified cases") + 
+  #theme_minimal() + 
+  cowplot::theme_cowplot() + 
+  theme(plot.caption = element_text(size=11), 
+        axis.text.x = element_text(angle = 45, hjust=1))
+```
+
+<br><br><br>
+
+### Case demographics and risk factors summary - last 12 months
+
+```{r alldata analysis}
+hepB_unsp_12m <- filter(hepB_data, condition=="HepB-Unspecified")
+
+# defn distribution and numbers
+unsp_defn.num <- xtabs(~defn, data=hepB_unsp_12m)
+unsp_defn.pct <- percent(prop.table(unsp_defn.num))
+
+# sex distribution
+unsp_sex.num <- xtabs(~sex, data=hepB_unsp_12m)
+unsp_sex.pct <- percent(prop.table(unsp_sex.num))
+
+
+# atsi distribution
+unsp_atsi.num <- xtabs(~atsi, data=hepB_unsp_12m, addNA=TRUE)
+unsp_atsi.pct <- percent(prop.table(unsp_atsi.num))
+
+# cty_birth distribution
+unsp_cty.num <- xtabs(~aus_born, data=hepB_unsp_12m)
+unsp_cty.pct <- percent(prop.table(unsp_cty.num))
+
+```
+
+<br><br>
+
+#### Hepatitis B - Unspecified
+
+In the last 12 months, `r nrow(hepB_unsp_12m)` unspecified Hepatitis B cases were notified within NEPHU catchment area - `r unsp_defn.num[[1]]` (`r unsp_defn.pct[[1]]`%) confirmed.
+
+-   Sex: `r unsp_sex.pct[[1]]`% female, `r unsp_sex.pct[[2]]`% male
+-   Age: median `r median(hepB_unsp_12m$age, na.rm=TRUE)` years (range: `r min(hepB_unsp_12m$age, na.rm=TRUE)` - `r max(hepB_unsp_12m$age, na.rm=TRUE)`)
+-   Indigenous status: `r unsp_atsi.pct[[1]]`% Aboriginal and/or Torres Strait Islander (data available for `r unsp_atsi.pct[[1]] + unsp_atsi.pct[[3]]`% of cases)
+-   Country of birth: `r percent(unsp_cty.num[["Australia"]]/(unsp_cty.num[["Australia"]] + unsp_cty.num[["Overseas"]]))`% born in Australia, `r percent(unsp_cty.num[["Overseas"]]/(unsp_cty.num[["Australia"]] + unsp_cty.num[["Overseas"]]))`% born overseas (data available for `r unsp_cty.pct[["Australia"]] + unsp_cty.pct[["Overseas"]]`% of cases)
+
+<br><br>
+
+**Age and sex distribution of Hepatitis B cases for this period**
+
+```{r age-sex pyramid}
+# subset data
+pyramid.dat <- hepB_data %>% select(age, agecat5, sex, condition) %>% filter(sex %in% c("Male", "Female"))%>% mutate(sex = fct_rev(fct_drop(sex)))
+
+# plot
+apyramid::age_pyramid(data=pyramid.dat, age_group="agecat5", split_by="sex",stack_by="condition", show_midpoint=FALSE) + 
+  cowplot::theme_cowplot() + 
+  labs(y="cases", x="age group (years)", title="", fill="condition") 
+
+```
+
+<br><br><br>
+
+#### Distribution of Hepatitis B - Unspecified infections by LGA
+
+```{r lga distbn}
+table_mthyr_header <- levels(fct_inorder(factor(vic_data %>% arrange(event_date) %>% pull(mth_yr))))
+
+# HepB-Unspecified
+vic_unsp_monthly_count <- addmargins(xtabs(~epi_MY, data=vic_data %>% filter(condition=="HepB-Unspecified"))) %>% as.data.frame() %>% 
+  rename(VIC = Freq)
+
+vic_unsp_monthly_count.row <- as.data.frame(t(vic_unsp_monthly_count)) %>% 
+  row_to_names(1) %>% 
+  mutate(across(1:nrow(vic_unsp_monthly_count), ~as.numeric(.))) %>% 
+  tibble::rownames_to_column("LGA") %>% 
+  rename(NEPHU = Sum) # use NEPHU so that it can append as row to nephu_lga table below
+
+NEPHU <- sum # customise function label for use with addmargins
+
+unsp_lga.tab <- addmargins(xtabs(~nephu_vic + epi_MY, data=vic_data %>% filter(condition=="HepB-Unspecified"), exclude="Vic"), c(1,2), 
+                               FUN = NEPHU, quiet=TRUE) %>% as.data.frame.matrix() %>% 
+  tibble::rownames_to_column("LGA") %>% 
+  add_row(vic_unsp_monthly_count.row) %>% 
+  left_join(., pop_data, by="LGA") %>% 
+  mutate(Rate = round(NEPHU/Pop_2021*100000, 1)) %>% 
+  rename(`Total cases` = NEPHU, "LGA/Area" = LGA) %>% 
+  select(-Pop_2021)
+  #mutate(LGA=replace(LGA, LGA=="Sum", "Total - NEPHU"))
+#lga_cond.tab$LGA <- replace(lga_cond.tab$LGA, lga_cond.tab$LGA=="Sum", "Total cases")
+names(unsp_lga.tab)[2:(length(table_mthyr_header)+1)] <- table_mthyr_header
+
+highest_unsp_lga <- filter(unsp_lga.tab, `LGA/Area` %in% nephu_lgas) %>% 
+  arrange(desc(`Total cases`)) %>% 
+  select("LGA/Area") %>% 
+  slice(1)
+
+```
+
+Tables and maps showing the number of unspecified Hepatitis B cases by LGA within NEPHU.
+
+The LGA with the highest number of unspecified Hepatitis B cases during this period is `r highest_unsp_lga`.
+
+<br>
+
+```{r lga map data}
+library(sf)
+lga_file <- "Data/LGA_2022_AUST_GDA2020_SHP/LGA_2022_AUST_GDA2020.shp"
+
+nephu_lgas_short <- c("Banyule", "Boroondara", "Darebin", "Hume", "Knox", "Manningham", "Maroondah", "Nillumbik", "Whitehorse", "Whittlesea", "Yarra", "Yarra Ranges")
+
+nephu_lga.sf <- st_read(here(lga_file), quiet=TRUE) %>% 
+  select(-c(STE_CODE21, AUS_CODE21, AUS_NAME21, LOCI_URI21)) %>% 
+  rename(lga_code=LGA_CODE22, lga_name=LGA_NAME22, ste_name=STE_NAME21, areasqkm=AREASQKM, shp_length=SHAPE_Leng, 
+         shp_area=SHAPE_Area) %>% 
+  filter(lga_name %in% nephu_lgas_short) %>% 
+  arrange(lga_name) 
+nephu_lga.sf$LGA <- nephu_lgas
+
+```
+
+<br>
+
+**Unspecified Hepatitis B cases by LGA in NEPHU catchment**
+
+```{r unsp_lga table}
+flextable(unsp_lga.tab) %>% autofit() %>% add_footer_lines(paste0("Rate is the yearly rate of ", params$condition, " per 100,000 population")) %>% add_footer_lines("Population based on the 2021 ABS Census")
+
+```
+
+<br>
+
+**Map showing distribution of total unspecified Hepatitis B cases in last 12 months**
+
+```{r unsp_lga map}
+nudge_lga <- c("Boroondara", "Darebin", "Yarra", "Maroondah")
+
+(lga_unsp.map <- left_join(nephu_lga.sf, unsp_lga.tab %>% select("LGA/Area", "Total cases", Rate), 
+                           by=c("LGA"="LGA/Area")) %>% 
+  ggplot() + 
+  geom_sf(aes(fill=Rate), col="black") + 
+  scale_fill_gradient2(low="yellow", high="red", name = "Rate") + 
+  geom_sf_text(data=nephu_lga.sf %>% filter(!(lga_name %in% nudge_lga)), aes(label=lga_name), size=3) + 
+  geom_sf_text(data=nephu_lga.sf %>% filter(lga_name=="Darebin"), aes(label=lga_name), size=3, nudge_x = -0.07, nudge_y= -0.01) +
+  geom_sf_text(data=nephu_lga.sf %>% filter(lga_name=="Yarra"), aes(label=lga_name), size=3, nudge_x = -0.03, nudge_y= -0.01) +
+  geom_sf_text(data=nephu_lga.sf %>% filter(lga_name=="Boroondara"), aes(label=lga_name), size=3, nudge_x = -0.07, nudge_y= -0.025) + 
+  geom_sf_text(data=nephu_lga.sf %>% filter(lga_name=="Maroondah"), aes(label=lga_name), size=3, nudge_x = 0.03, nudge_y= -0.01) +
+  theme_void()
+)
+```
+
+<br><br>
+
+#### Risk factors
+
+```{r risk factors}
+risk_factors_levels <- c("Accupuncture", "HIV positive MSM", "Injecting drug use", "Sexual partner of the same sex with HBV", "Tattoos", "Surgical procedure/endoscopy", "Perinatal transmission", "Household contact with a person known to have this illness", "Other", "Not stated", "None of the above", "Risk unable to be determined")
+
+hepB_risk.dat <- hepB_data %>% 
+  filter(condition=="HepB-Unspecified") %>% 
+  select(phess_id, condition, defn, risk_factors, primary_exposure, lga) %>% 
+  separate_rows(risk_factors, primary_exposure, sep=";") %>% 
+  filter(primary_exposure=="Primary") %>% 
+  mutate(risk_factors = factor(risk_factors, levels=risk_factors_levels))
+
+
+risk.count <- xtabs(~risk_factors + condition, data=hepB_risk.dat)
+risk.pct <- percent(prop.table(risk.count, margin=2)) # column percentages
+
+risk.tab <- bind_cols(risk_factors_levels, risk.count, risk.pct) %>% 
+  mutate(`Cases (%)` = paste0(`HepB-Unspecified...2`, " (", `HepB-Unspecified...3`, "%)")) %>% 
+  rename(`Risk factors` = ...1) %>% 
+  select(`Risk factors`, `Cases (%)`)
+
+flextable(risk.tab) %>% autofit() %>% add_footer_lines("Data in table does not include cases with missing data for risk factors")
+```
+
+<br><br>
+
+#### Country of birth for risk factor stated as Other
+
+```{r Other risk cty_birth, ft.align="left"}
+hepB_riskother.dat <- hepB_data %>%
+  filter(condition=="HepB-Unspecified") %>%
+  select(phess_id, condition, defn, cty_birth, risk_factors, primary_exposure, lga) %>%
+  separate_rows(risk_factors, primary_exposure, sep=";") %>%
+  filter(primary_exposure=="Primary") %>%
+  filter(risk_factors=="Other") %>% 
+  mutate(risk_factors = factor(risk_factors, levels=risk_factors_levels))
+
+country.num <- xtabs(~cty_birth, data=hepB_riskother.dat)
+country.total <- addmargins(country.num[country.num>0], margin=1)
+country.pct <- percent(prop.table(country.num))
+
+country.tab <- bind_cols(as.data.frame(country.num), as.data.frame(country.pct)) %>% 
+  mutate(`Cases (%)` = paste0(`Freq...2`, " (", `Freq...4`, "%)")) %>% 
+  rename("Country" = `cty_birth...1`) %>% 
+  arrange(desc(`Freq...2`)) %>% 
+  filter(Country!="") %>% 
+  filter(`Freq...2`>1) %>% 
+  select(`Country`, `Cases (%)`) %>% 
+  add_row(Country = "Total cases", `Cases (%)` = as.character(country.total[["Sum"]]))
+
+flextable(country.tab) %>% autofit()
+```
+
+Table showing country of birth for cases with primary risk factor assgined as 'Other'
+
+<br><br>
