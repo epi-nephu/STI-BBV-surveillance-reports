@@ -13,12 +13,17 @@ Due to smaller numbers than STI, change per population to 1 million
 Alternatively, instead of monthly rates, we could consider quarterly rates or yearly rates?
 Need to also look at risk factors and treatment or care if data allows
 
+
+Version control notes:
+- included cumulative graph function
+- Hep B and Hep C sections
+
 -->
 
 ```{r setup, include=FALSE}
 # ensure to change the token argument in the dbConnect() to either "PHAR" if working from NEPHU office or "PHAR proxy" if working from home
 
-con <- DBI::dbConnect(odbc::odbc(), "PHAR")
+con <- DBI::dbConnect(odbc::odbc(), "PHAR proxy")
 
 knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, fig.height=6, fig.width=13, connection="con")
 
@@ -40,7 +45,7 @@ hep_raw <- DBI::dbGetQuery(con,
                            LEFT JOIN dh_public_health.phess_release.events_hbv_hcv ev ON ce.EVENT_ID = ev.EVENT_ID 
                            LEFT JOIN dh_public_health.phess_release.events_hbv_hcv_risks rk ON ce.EVENT_ID = rk.EVENT_ID 
                            WHERE CONDITION_TYPE = 'Blood Borne Viruses' 
-                           AND EVENT_DATE BETWEEN '2022-01-01' AND '2025-06-30' 
+                           AND EVENT_DATE BETWEEN '2022-01-01' AND '2025-08-31' 
                            ORDER BY EVENT_DATE DESC; 
                            "
                            )
@@ -51,7 +56,7 @@ hep_raw <- DBI::dbGetQuery(con,
 
 ```{r set params}
 start_date <- ymd("2022-01-01")
-max_date <- ymd("2025-06-30")
+max_date <- ymd("2025-08-31")
 min_date_1yr <- max_date - years(1) + days(1)
 
 ```
@@ -175,39 +180,6 @@ Each disease profile will include:
 * Map showing annual rate per 100,000 population at LGA level (data in the last 12 months)
 
 
-```{r minors}
-minor <- hep_data %>% 
-  filter(age<16) %>% 
-  filter(lga %in% nephu_lgas)
-
-
-f.minor_dftable <- function(std) {
-  table <- minor %>% 
-    filter(disease==std) %>% 
-    filter(event_date>=min_date_1yr) %>% 
-    group_by(lga) %>% 
-    summarise(total = n(), 
-              females = sum(sex=="Female", na.rm=T), 
-              pct_females = percent(females / total), 
-              median_age = median(age, na.rm=T))
-  return(table)
-}
-
-f.minor_table <- function(df) {
-  flextable(df) %>% 
-    autofit() %>% 
-    set_header_labels(lga = "LGA", total = "Total", females = "Females", pct_females = "% Females", median_age = "Median age") %>% 
-    set_caption("Data shown for the last 12 months")
-
-}
-
-```
-
-```{r, eval=FALSE}
-f.minor_table(f.minor_dftable("HepC"))
-
-```
-
 ``` {r age-sex pyramid_function}
 f.agesex_pyr_nephu <- function(std) {
   pyramid.dat <- hep_data %>% 
@@ -217,6 +189,19 @@ f.agesex_pyr_nephu <- function(std) {
     filter(sex %in% c("Male", "Female")) %>% 
     mutate(sex=fct_rev(fct_drop(sex)))
   
+  sex_other_pct <- hep_data %>% 
+    filter(disease==std) %>% 
+    filter(lga %in% nephu_lgas) %>% 
+    tabyl(sex) %>% 
+    filter(! sex %in% c("Female", "Male")) %>% 
+    adorn_totals() %>% 
+    mutate(percent = round((100 * percent), 1)) %>% 
+    filter(sex=="Total") %>% 
+    pull(percent)
+  
+  sex_other_sentence <- if(sex_other_pct==0) {""}
+  else{paste0("Excludes sex=Not stated / Other which makes up ", sex_other_pct, "% of total cases")}
+  
   plot <- apyramid::age_pyramid(data=pyramid.dat, age_group="agecat5", split_by="sex", stack_by="disease", proportional=TRUE, show_midpoint=FALSE, pal=c("#F8766D", "#00BFC4")) + 
   cowplot::theme_cowplot() + 
   theme(plot.title = element_text(size=12), 
@@ -224,7 +209,7 @@ f.agesex_pyr_nephu <- function(std) {
   labs(y="cases", 
        x="age group (years)", 
        title=paste0("Age and sex distribution of\n", std, " cases in NEPHU"), 
-       caption=paste0("Data period: ", start_date, " to ", max_date))
+       caption=paste0("Data period: ", start_date, " to ", max_date, "\n", sex_other_sentence))
   
   return(plot)
 }
@@ -353,7 +338,7 @@ f.trend_plot_lga <- function(std) {
     summarise(count=n(), cond=first(condition), disease=first(disease))
   
   lga_mth_rate <- left_join(lga_mth_count, pop_table, by="lga") %>% 
-    mutate(mth_rate = count/pop_2021*100000)
+    mutate(mth_rate = count/pop_2021*1000000)
   
   vic_mth_rate <- filter(hep_vic_mth_rate, disease==std) %>% rename(state=lga)
   
@@ -362,7 +347,7 @@ f.trend_plot_lga <- function(std) {
     geom_line(data=vic_mth_rate, aes(x=mth_yr_fmt, y=mth_rate,  group=disease, col="hep", lty="VIC")) + 
     geom_smooth(aes(x=mth_yr_fmt, y=mth_rate, col="trend", fill="band"), method="gam", se=T, alpha=0.7) + 
     scale_x_date(expand=c(0,0), date_breaks="3 months", date_minor_breaks="month", date_labels="%b %Y", name="") + 
-    scale_y_continuous(expand=c(0,0), breaks=integer_breaks(), name="Monthly notified rate \n(per 100,000 population)") + 
+    scale_y_continuous(expand=c(0,0), breaks=integer_breaks(), name="Monthly notified rate \n(per 1,000,000 population)") + 
     scale_colour_manual(values=c("hep"="red", "trend"="blue"), labels=c("hep"="LGA",  "trend"="LGA trend and \n95% CI"), name="") + 
     scale_fill_manual(values=c("band"="grey70"), labels=NULL, guide="none") + 
     scale_linetype_manual(values="dotted", name="", guide=guide_legend(order=1)) + 
@@ -381,6 +366,42 @@ f.trend_plot_lga <- function(std) {
 
 ```{r}
 f.trend_plot_lga("HepB")
+
+```
+
+```{r cum_yr_graph function}
+# Create function to plot cumulative case number - NEPHU level
+
+f.cum_plot_nephu <- function(std) {
+  cum_data <- hep_data %>% 
+    filter(disease==std) %>% 
+    filter(lga %in% nephu_lgas) %>% 
+    group_by(yr, epimonth) %>% 
+    summarise(count=n(), cond=first(condition), disease=first(disease)) %>% 
+    mutate(lga="NEPHU") %>% 
+    mutate(yr = as.character(yr)) %>% 
+    group_by(yr) %>% 
+    mutate(cum_count = cumsum(count))
+  
+  plot <- ggplot(cum_data) + 
+    geom_line(aes(x=epimonth, y=cum_count, group=factor(yr), col=factor(yr))) + 
+    #scale_x_discrete(expand=c(0,0)) + 
+    scale_y_continuous(breaks=seq(0, 350, by=50)) + 
+    cowplot::theme_cowplot() + 
+    theme(plot.title = element_text(size=12)) + 
+    labs(title=paste0("Cumulative ", std, " case numbers by month in NEPHU"), 
+         caption=paste0("Data period: ", start_date, " to ", max_date), 
+         x="", 
+         y="Cumulative case numbers", 
+         col="Year")
+  
+  return(plot)
+}
+
+```
+
+```{r}
+f.cum_plot_nephu("HepB")
 
 ```
 
@@ -471,12 +492,12 @@ f.exp_table_print <- function(table) {
 <br>
 
 
-## Chlamydia
+## Hepatitis B
 <br>
 
-```{r chlam_demo, eval=F}
+```{r hepb_demo, eval=F}
 # sex distribution
-hep_data %>% filter(disease=="Chlamydia") %>% 
+hep_data %>% filter(disease=="HepB") %>% 
   filter(lga %in% nephu_lgas) %>% 
   tabyl(., cob)
 sex.num <- xtabs(~sex, data=cond_data)
@@ -485,84 +506,85 @@ sex.pct <- percent(prop.table(sex.num))
 # atsi distribution
 atsi.num <- xtabs(~atsi, data=cond_data, addNA=TRUE)
 atsi.pct <- percent(prop.table(atsi.num))
-tabyl(nephu_data[nephu_data$disease=="Chlamydia", ], atsi)
+tabyl(nephu_data[nephu_data$disease=="HepB", ], atsi)
 
 # country of_birth distribution
 cob.num <- xtabs(~aus_born, data=cond_data)
 cob.pct <- percent(prop.table(cob.num))
-tabyl(nephu_data[nephu_data$disease=="Gonorrhea", ], aus_born)
+tabyl(nephu_data[nephu_data$disease=="HepB", ], aus_born)
 
 ```
 
-``` {r chlam_section1}
-chlam_agesex <- f.agesex_pyr_nephu("Chlamydia")
+``` {r hepb_section1}
+hepb_agesex <- f.agesex_pyr_nephu("HepB")
 
-chlam_nephu <- f.trend_plot_nephu("Chlamydia")
+hepb_nephu <- f.trend_plot_nephu("HepB")
 
-ggpubr::ggarrange(chlam_agesex, chlam_nephu, nrow=1)
-
-```
-<br><br>
-
-
-```{r chlam_map}
-f.rate_map_lga("Chlamydia")
+ggpubr::ggarrange(hepb_agesex, hepb_nephu, nrow=1)
 
 ```
 <br><br>
 
 
-##### Monthly Chlamydia rate per 100,000 population compared to VIC average by LGA
+```{r hepb_map}
+f.rate_map_lga("HepB")
+
+```
+<br><br>
+
+
+##### Monthly Hepatitis B rate per 1,000,000 population compared to VIC average by LGA
 
 ```{r chlam_lga_plots}
-f.trend_plot_lga("Chlamydia")
-```
-<br><br>
-
-```{r}
-chlam_min_dftable <- f.minor_dftable("Chlamydia")
-
-eval_chlam_minor <- if_else(length(chlam_min_dftable)>0, TRUE, FALSE)
-
-```
-
-
-```{r, eval=eval_chlam_minor}
-knitr::asis_output(paste0("**Chlamydia cases in minors (<16 years) between ", format(min_date_1yr, '%d %b %Y'), " - ", format(max_date, '%d %b %Y'), "**"))
-
-f.minor_table(chlam_min_dftable)
+f.trend_plot_lga("HepB")
 
 ```
 <br><br>
 
 
-## Gonorrhea
+## Hepatitis C
 <br>
 
 ```{r}
-gono_agesex <- f.agesex_pyr_nephu("Gonorrhea")
+hepc_agesex <- f.agesex_pyr_nephu("HepC")
 
-gono_nephu <- f.trend_plot_nephu("Gonorrhea")
+hepc_nephu <- f.trend_plot_nephu("HepC")
 
-ggpubr::ggarrange(gono_agesex, gono_nephu, nrow=1)
+ggpubr::ggarrange(hepc_agesex, hepc_nephu, nrow=1)
 
 ```
 <br><br>
 
 
 ```{r}
-f.rate_map_lga("Gonorrhea")
+f.rate_map_lga("HepC")
 
 ```
 <br><br>
 
 
-##### Monthly Gonorrhea rate per 100,000 population compared to VIC average by LGA
+##### Monthly Hepatitis C rate per 1,000,000 population compared to VIC average by LGA
 
 ```{r}
-f.trend_plot_lga("Gonorrhea")
+f.trend_plot_lga("HepC")
 ```
 <br><br>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 **Sexual exposure risk by LGA level**
 
@@ -576,23 +598,6 @@ f.exp_graph("Gonorrhea")
 
 ```{r}
 f.exp_table_print(f.sex_exp_table("Gonorrhea"))
-
-```
-<br><br>
-
-
-```{r}
-gono_min_dftable <- f.minor_dftable("Gonorrhea")
-
-eval_gono_minor <- if_else(nrow(gono_min_dftable)>0, TRUE, FALSE)
-
-```
-
-
-```{r, eval=eval_gono_minor}
-knitr::asis_output(paste0("**Gonorrhea cases in minors (<16 years) between ", format(min_date_1yr, '%d %b %Y'), " - ", format(max_date, '%d %b %Y'), "**"))
-
-f.minor_table(gono_min_dftable)
 
 ```
 <br><br>
@@ -749,35 +754,6 @@ hiv_counts_lga <- hiv_nephu %>%
 flextable(hiv_counts_lga) %>% set_header_labels(lga="LGA") %>% autofit() %>% 
   add_footer_lines(paste0("Note: Yr", year(max_date), " is not a full year, ends ", format(max_date, '%d %b %Y'))) %>% align(i=1, j=1, align="right", part="footer")
   
-```
-<br><br>
-
-**HIV cases (<18 months old)**
-
-```{r}
-hiv_cong <- nephu_data %>% 
-  filter(disease=="HIV - <18mths") %>% 
-  filter(event_date>=min_date_1yr) %>% 
-  select(defn, event_date, sex, death, lga)
-
-eval_hiv_cong <- if_else(nrow(hiv_cong)>0, TRUE, FALSE)
-eval_hiv_cong_nil <- if_else(nrow(hiv_cong)==0, TRUE, FALSE)
-
-```
-
-```{r, eval=eval_hiv_cong}
-knitr::asis_output(paste0("**HIV cases (<18 months old) between ", format(min_date_1yr, '%d %b %Y'), " - ", format(max_date, '%d %b %Y'), "**"))
-
-flextable(hiv_cong) %>% 
-  set_header_labels(defn="Case classification", event_date = "Event date", sex="Sex", death="Death status", lga="LGA") %>% 
-  autofit() %>% 
-  set_caption("Data shown for the last 12 months")
-
-```
-
-```{r, eval=eval_hiv_cong_nil}
-knitr::asis_output(paste0("No reported cases of HIV (<18 months old) in NEPHU between ", format(min_date_1yr, '%d %b %Y'), " - ", format(max_date, '%d %b %Y')))
-
 ```
 
 <br><br><br>
